@@ -14,9 +14,9 @@ logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=lo
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__)) # This is the Project Root
 CATEGORIES = {'证券': 0, '教育': 1, '健康': 2, '娱乐': 3, '房产': 4, '科技': 5, '财经': 6, '军事': 7, '体育': 8}
 MODEL_SIZE = 100     # TODO: tune
-FEATURE_SPLIT = 50   # TODO: tune
+FEATURE_SPLIT = 30   # TODO: tune
 C45_Z = 0.67         # TODO: tune
-MIN_N_FILES = 130    # TODO: change to all
+#MIN_N_FILES = 
 
 def shuffle_files():
     """
@@ -60,8 +60,8 @@ def load_files(fold):
         test_cat = []
         for nf, f in enumerate(sorted(files)):
 
-            if nf > int(time.time()*10000)%7+MIN_N_FILES: # TODO: Take this off
-                break 
+            #if nf > 120:
+            #    break 
             
             data = read_data_from_file(root, f)
             if data:
@@ -91,7 +91,7 @@ def train_w2v(documents, save_name):
         window=10,
         min_count=2,
         workers=10)
-    model.train(documents, total_examples=len(documents), epochs=10)    # TODO: tuning later (when finalizing)
+    model.train(documents, total_examples=len(documents), epochs=10)
     pickle.dump(model, open(save_name,'wb'))
     return model
 
@@ -110,7 +110,6 @@ def docs2vecs(model, docs):
         doc_vec = np.mean(word_vecs, 0)
         return doc_vec
         
-    #print(doc2vec(docs[0]).shape)
     x_matrix = np.array([doc2vec(doc) for doc in docs])
     return x_matrix
 
@@ -142,7 +141,7 @@ class DTreeNode:
         self.value = value
         #logging.debug(f'Inte: {feature}; {value:.3f}; \t{self.count}')
     def replace_with_leaf(self):
-        print('replaced')
+        #print('replaced')
         self.label = self.count.index(max(self.count))
         self.left = None
         self.Right = None
@@ -188,11 +187,27 @@ def DTree(data, labels, features): # examples, features
                   where i iterates < or >=; j iterates categories
         """
         s_v_c = np.zeros((2,9), dtype=np.int8)
-        for doc, label in zip(data,labels):
+        for doc, label in zip(data,labels):  # TODO: don't iterate data by 'for'
             child_node = int(doc[feature] >= value)
             s_v_c[child_node,label] += 1
         sum_s_i = s_v_c.sum(axis=1)
         rtn = sum([s_i_j * np.log(s_i_j/sum_s_i[i]) for i,s_i in enumerate(s_v_c) for s_i_j in s_i if s_i_j != 0 and sum_s_i[i] > 0])
+        return rtn
+
+    def gini_score(feature, value):
+        s_v_c = np.zeros((2,9), dtype=np.int8)
+        for doc, label in zip(data,labels):  # TODO: don't iterate data by 'for'
+            child_node = int(doc[feature] >= value)
+            s_v_c[child_node,label] += 1
+        #print(s_v_c)
+        sum_s_i = s_v_c.sum(axis=1)
+        sum_s = sum_s_i.sum()
+        portion_s_i = sum_s_i/sum_s
+        #print([(s_v_c[0,i]/sum_s_i[0])**2 for i in range(9)])
+        #print([(s_v_c[1,i]/sum_s_i[1])**2 for i in range(9)])
+        pk0 = sum([(s_v_c[0,i]/sum_s_i[0])**2 for i in range(9)])
+        pk1 = sum([(s_v_c[1,i]/sum_s_i[1])**2 for i in range(9)])
+        rtn= -portion_s_i[0]*(1-pk0)-portion_s_i[1]*(1-pk1)
         return rtn
 
     def get_best_rule(score_function):
@@ -206,6 +221,7 @@ def DTree(data, labels, features): # examples, features
             score_function(feature, value) 
             for value in candidates[feature]] # dim 1
             for feature in features])         # dim 0
+        #print(scores[:3])#####369
         a = np.max(scores, axis=1)       # a = features best values
         b = np.argmax(a, axis=0)         # b = argmax feature index in scoress
         c = np.argmax(scores[b], axis=0) # c = argmax value index of the feature
@@ -226,14 +242,13 @@ def DTree(data, labels, features): # examples, features
     #return a leaf node with the category label 
     #that is the most common in examples. 
     most_common_label = counted_labels.index(max(counted_labels))
-    #print('most common ',most_common_label)
     if len(features) == 0:
         rtn.set_leaf(most_common_label)
         return rtn
     
     #Else pick a feature F and create a node R for it
-    # TODO: The same feature can be used more than once given that the splits differ?
-    feature, value = get_best_rule(neg_sum_entropy)
+    # TODO: May the same feature be used more than once given that the splits differ?
+    feature, value = get_best_rule(neg_sum_entropy)#gini_score)
     
     #For each possible value vi of F: (NOTE: we have only 2: < & >=)
     #Let examples_i be the subset of examples that have value v_i for F
@@ -249,7 +264,7 @@ def DTree(data, labels, features): # examples, features
     
     lr_data = [np.zeros(shape=(0,data.shape[1])) for i in range(2)]
     lr_labels = [[] for i in range(2)]
-    for n_doc in range(len(data)):
+    for n_doc in range(len(data)):  # TODO: don't iterate data by 'for'
         doc = data[n_doc]
         lr = int(doc[feature] >= value)
         lr_data[lr] = np.concatenate((lr_data[lr],[doc]))
@@ -257,15 +272,13 @@ def DTree(data, labels, features): # examples, features
 
     features.remove(feature)
 
-    if len(lr_labels[0]) == 0:      # TODO: Remove this condition?
-        logging.error('Nothing meets this condition?')
+    if len(lr_labels[0]) == 0:
         rtn.left = DTreeNode([0 for i in range(9)])
         rtn.left.set_leaf(most_common_label)
     else:
         rtn.left = DTree(lr_data[0], lr_labels[0], features)
         
-    if len(lr_labels[1]) == 0:      # TODO: Remove this condition?
-        logging.error('Nothing meets this condition?')
+    if len(lr_labels[1]) == 0:
         rtn.right = DTreeNode([0 for i in range(9)])
         rtn.right.set_leaf(most_common_label)
     else:
@@ -281,6 +294,8 @@ def PruneDTree(node,i):
     def get_error(node):
         Z = C45_Z
         N = sum(node.count)
+        if N == 0:
+            return float('inf')
         f = 1 - max(node.count)/N
         e = (f+(Z**2)/(2*N)+Z*np.sqrt(f/N-(f**2)/N+(Z**2)/(4*(N**2))))/(1+Z**2/N)
         return e
@@ -305,7 +320,7 @@ def PruneDTree(node,i):
         if replaced <= original:
             node.right.replace_with_leaf()
     
-    print('-'*i)
+    #print('-'*i)
     return node
     
 
@@ -324,101 +339,104 @@ def Predict(node, doc):
     return Predict(node.right, doc)
 
 
+
+
 if __name__ == "__main__":
     logging.info(f"""
     MODEL_SIZE = {MODEL_SIZE}
     FEATURE_SPLIT = {FEATURE_SPLIT}
     C45_Z = {C45_Z}
-    MIN_N_FILES = {MIN_N_FILES}
     """)
-
-    #Never call shuffle_files() again!!
+    #MIN_N_FILES = {MIN_N_FILES}
     
-    fold = 3    # TODO: fold - from 0 to 9
-    train_texts, train_y, test_texts, test_y = load_files(fold)
-    
-    # compute attr
-    ## train word2vec
-    model_name = f'model/model-{fold}.w2v'
-    model = train_w2v(train_texts, model_name)
-    #model = pickle.load(open(model_name,'rb'))
-    
-    ### tag words & docs
-    train_x = docs2vecs(model, train_texts)
-    test_x = docs2vecs(model, test_texts) 
-    logging.info('Docs tagged')
+    def one_fold(fold):
+        #Never call shuffle_files() again!!
+        
+        train_texts, train_y, test_texts, test_y = load_files(fold)
+        
+        # compute attr
+        ## train word2vec
+        model_name = f'model/model-{fold}.w2v'
+        model = train_w2v(train_texts, model_name)
+        #model = pickle.load(open(model_name,'rb'))
+        
+        ### tag words & docs
+        train_x = docs2vecs(model, train_texts)
+        test_x = docs2vecs(model, test_texts) 
+        logging.info('Docs tagged')
 
-    # decision tree
-    ## impurity function
-    ### -[*] Entropy
-    ### -[ ] Gini index
-    ### -[ ] Misclassification error
+        # decision tree
+        ## impurity function
+        ### -[*] Entropy
+        ### -[ ] Gini index
+        ### -[ ] Misclassification error
 
-    logging.info('Growing tree')
-    ## growing
-    ### if termination condition not reached
-    ### calculate each candidate's info gain
-    ### choose the best one and split
-    ### recursion
-    raw_tree = DTree(train_x, train_y, [i for i in range(train_x.shape[1])])
-    # NOTE: To pickle a self-defined type (e.g. DTreeNode),
-    # see https://stackoverflow.com/questions/27351980/how-to-add-a-custom-type-to-dills-pickleable-types
+        logging.info('Growing tree')
+        ## growing
+        ### if termination condition not reached
+        ### calculate each candidate's info gain
+        ### choose the best one and split
+        ### recursion
+        raw_tree = DTree(train_x, train_y, [i for i in range(train_x.shape[1])])
+        # NOTE: To pickle a self-defined type (e.g. DTreeNode),
+        # see https://stackoverflow.com/questions/27351980/how-to-add-a-custom-type-to-dills-pickleable-types
 
-    
-    
-    # Testing
-    ## accuracy
-    ## f-measure
+        
+        
+        # Testing
+        ## accuracy
+        ## f-measure
 
-    def get_result(tree, x, y):
-        """
-        OUT::result: np array (# of cats, # of cats)
-        """
-        result = np.zeros(shape=(9,9))
-        for i in range(len(y)):
-            cat_ans = y[i]
-            cat_pred = Predict(tree, x[i])
-            result[cat_ans,cat_pred] += 1
-        accuracy = result.trace()/result.sum()
-        return result, accuracy     # TODO: f1_score
-    
-    ## plot the result (热度图)
-    def plot_result(title, result):
-        categories = ['证券', '教育', '健康', '娱乐', '房产', '科技', '财经', '军事', '体育']
-        plt.rc('font', family='Heiti SC')
-        plt.imshow(result)
-        plt.xticks(np.arange(9),categories)
-        plt.yticks(np.arange(9),categories)
-        for i in range(9):
-            for j in range(9):
-                text = plt.text(j, i, result[i,j],
-                    ha='center', va='center', color='w')
-        plt.title(title)
-        plt.colorbar()
-        plt.show()
+        def get_result(tree, x, y):
+            """
+            OUT::result: np array (# of cats, # of cats)
+            """
+            result = np.zeros(shape=(9,9))
+            for i in range(len(y)):
+                cat_ans = y[i]
+                cat_pred = Predict(tree, x[i])
+                result[cat_ans,cat_pred] += 1
+            accuracy = result.trace()/result.sum()
+            return result, accuracy     # TODO: f1_score?
+        
+        ## plot the result (热度图)
+        def plot_result(title, tree):
+            logging.info(title)
+            train_result, train_accuracy = get_result(tree, train_x, train_y)
+            test_result, test_accuracy = get_result(tree, test_x, test_y)
+            logging.info(f"Accuracy on training: {train_accuracy:.3f}")
+            logging.info(f"Accuracy on testing: {test_accuracy:.3f}")
+            print(test_result)
+
+            categories = ['0证券', '1教育', '2健康', '3娱乐', '4房产', '5科技', '6财经', '7军事', '8体育']
+            plt.imshow(test_result)
+            plt.xticks(np.arange(9),categories)
+            plt.yticks(np.arange(9),categories)
+            for i in range(9):
+                for j in range(9):
+                    text = plt.text(j, i, test_result[i,j],
+                        ha='center', va='center', color='w')
+            plt.title(title)
+            plt.colorbar()
+            #plt.show()
+            plt.savefig(f'plot/{title}-{TIME_STAMP}.png')
+            plt.clf()
 
 
 
-    # raw tree
-    logging.info("Raw tree")
-    rtrain_result, rtrain_accuracy = get_result(raw_tree, train_x, train_y)
-    rtest_result, rtest_accuracy = get_result(raw_tree, test_x, test_y)
-    logging.info(f"Accuracy on training: {rtrain_accuracy:.3f}")
-    logging.info(f"Accuracy on testing: {rtest_accuracy:.3f}")
-    print(rtest_result)
-    plot_result("Raw tree accuracy",rtest_result)
+        # raw tree
+        plot_result("Raw tree",raw_tree)
 
-    ## post-pruning
-    ### Subtree replacement
-    logging.info('Pruning tree')
-    pruned_tree = PruneDTree(raw_tree,1)
+        ## post-pruning
+        ### Subtree replacement
+        logging.info('Pruning tree')
+        pruned_tree = PruneDTree(raw_tree,1)
 
-    # pruned tree
-    logging.info("Pruned tree")
-    ptrain_result, ptrain_accuracy = get_result(pruned_tree, train_x, train_y)
-    ptest_result, ptest_accuracy = get_result(pruned_tree, test_x, test_y)
-    logging.info(f"Accuracy on training: {ptrain_accuracy:.3f}")
-    logging.info(f"Accuracy on testing: {ptest_accuracy:.3f}")
-    print(ptest_result)
-    plot_result("Pruned tree accuracy",ptest_result)
+        # pruned tree
+        plot_result("Pruned tree",pruned_tree)
+        
+
+    for fold in range(10):
+        logging.info("-"*300+f" Fold {fold} "+"-"*300)
+        one_fold(fold)
     
