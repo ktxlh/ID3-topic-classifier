@@ -7,13 +7,17 @@ import gensim
 import time
 import random
 import numpy as np
-logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.DEBUG)
+from matplotlib import pyplot as plt
+TIME_STAMP  = time.strftime("%Y%m%d%H%M%S", time.localtime())  # to avoid duplicated file names deleting files
+logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.INFO,
+    filename=f'output/{TIME_STAMP}.txt', filemode='w')
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__)) # This is the Project Root
 CATEGORIES = {'证券': 0, '教育': 1, '健康': 2, '娱乐': 3, '房产': 4, '科技': 5, '财经': 6, '军事': 7, '体育': 8}
-MODEL_SIZE = 100    # TODO: tuning
-FEATURE_SPLIT = 2   # TODO: tuning
-TIME_STAMP  = time.strftime("%Y%m%d%H%M%S", time.localtime())  # to avoid duplicated file names deleting files
-    
+MODEL_SIZE = 100     # TODO: tune
+FEATURE_SPLIT = 50   # TODO: tune
+C45_Z = 0.67         # TODO: tune
+MIN_N_FILES = 130    # TODO: change to all
+
 def shuffle_files():
     """
     This is one-off, facilitating cross validation.
@@ -23,7 +27,7 @@ def shuffle_files():
     for root, dirs, files in os.walk("new_weibo_13638/"):
         path = root.split(os.sep)
         if len(files)!=0:    
-            files_copy = [f for f in files]
+            files_copy = [f for f in files]     # TODO: is it necessary?
             shuffle(files_copy)
             category = CATEGORIES[os.path.basename(root)]
             for nf, f in enumerate(files_copy):
@@ -50,14 +54,13 @@ def load_files(fold):
         path = root.split(os.sep)
         if len(files)==0:
             continue
-        #print((len(path) - 1) * '---', os.path.basename(root), len(files))
 
         # ten-fold cross validation
         train_cat = []
         test_cat = []
         for nf, f in enumerate(sorted(files)):
 
-            if nf > int(time.time()*10000)%7+11: # TODO: Take this off
+            if nf > int(time.time()*10000)%7+MIN_N_FILES: # TODO: Take this off
                 break 
             
             data = read_data_from_file(root, f)
@@ -68,8 +71,7 @@ def load_files(fold):
                     test_cat.append(data)
         train_docs.append(train_cat)
         test_docs.append(test_cat)
-
-
+    print([len(cat) for cat in train_docs])
     logging.info(f'Training data: {sum([len(cat) for cat in train_docs])} from {len(train_docs)} categories')
     logging.info(f'Testing data: {sum([len(cat) for cat in test_docs])} from {len(test_docs)} categories')
 
@@ -113,28 +115,40 @@ def docs2vecs(model, docs):
     return x_matrix
 
 class DTreeNode:
-    def __init__(self):
-        #self.parent = parent_node
-        self.label = None   # Leaf node;     int
-        self.left = None    # Internal node; DTreeNode
-        self.right = None   # Internal node; DTreeNode
-        self.feature = None # Internal node; int
-        self.value = None   # Internal node; float
+    NODE_COUNT = 0  # static
+    def __init__(self,count):
         """
-        if parent_node:
-            if parent_left:
-                parent_node.left = self
-            else:
-                parent_node.right = self
+        IN::count: [int * 9] # of labels in each category under this subtree/node
         """
+        self.count = count  # All;      [int * 9]
+        self.label = None   # Leaf;     int
+        self.left = None    # Internal; DTreeNode
+        self.right = None   # Internal; DTreeNode
+        self.feature = None # Internal; int
+        self.value = None   # Internal; float
+        DTreeNode.NODE_COUNT += 1
+        if DTreeNode.NODE_COUNT % 10 == 0:
+            logging.info(f"{DTreeNode.NODE_COUNT:5d} nodes")
+
+    def is_leaf(self):
+        return self.label != None
+    def is_internal(self):
+        return self.label == None
     def set_leaf(self,label):
         self.label = label
-        logging.debug(f'Leaf: {label}')
+        #logging.debug(f'\tLeaf: {label}; \t\t{self.count}')
     def set_internal(self,feature, value):
         self.feature = feature
         self.value = value
-        logging.debug(f'Internal: {feature}; {value}')
-        
+        #logging.debug(f'Inte: {feature}; {value:.3f}; \t{self.count}')
+    def replace_with_leaf(self):
+        print('replaced')
+        self.label = self.count.index(max(self.count))
+        self.left = None
+        self.Right = None
+        self.feature = None
+        self.value = None
+
 
 def DTree(data, labels, features): # examples, features
     """
@@ -198,20 +212,20 @@ def DTree(data, labels, features): # examples, features
         return features[b], candidates[features[b],c]   # argmax feature index, argmax value
             
     # Will return a DTreeNode anyway. Create one first.
-    rtn = DTreeNode()
+    counted_labels = [labels.count(i) for i in range(9)]
+    rtn = DTreeNode(counted_labels)
     
     #If all examples are in one category, 
     #return a leaf node with that category label.
-    counted_label = [labels.count(i) for i in range(9)]
     for label in range(9):
-        if counted_label[label] == len(labels):
+        if counted_labels[label] == len(labels):
             rtn.set_leaf(label)
             return rtn
     
     #Else if the set of features is empty, 
     #return a leaf node with the category label 
     #that is the most common in examples. 
-    most_common_label = counted_label.index(max(counted_label))
+    most_common_label = counted_labels.index(max(counted_labels))
     #print('most common ',most_common_label)
     if len(features) == 0:
         rtn.set_leaf(most_common_label)
@@ -242,16 +256,17 @@ def DTree(data, labels, features): # examples, features
         lr_labels[lr].append(labels[n_doc])    
 
     features.remove(feature)
-    #print(len(lr_labels))
 
-    if len(lr_labels[0]) == 0:
-        rtn.left = DTreeNode()
+    if len(lr_labels[0]) == 0:      # TODO: Remove this condition?
+        logging.error('Nothing meets this condition?')
+        rtn.left = DTreeNode([0 for i in range(9)])
         rtn.left.set_leaf(most_common_label)
     else:
         rtn.left = DTree(lr_data[0], lr_labels[0], features)
         
-    if len(lr_labels[1]) == 0:
-        rtn.right = DTreeNode()
+    if len(lr_labels[1]) == 0:      # TODO: Remove this condition?
+        logging.error('Nothing meets this condition?')
+        rtn.right = DTreeNode([0 for i in range(9)])
         rtn.right.set_leaf(most_common_label)
     else:
         rtn.right = DTree(lr_data[1], lr_labels[1], features)
@@ -259,13 +274,40 @@ def DTree(data, labels, features): # examples, features
     #Return the subtree rooted at R.
     return rtn
     
-def PruneDTree(node, data, labels):
+def PruneDTree(node,i):
     """
     IN::node: root node of DTree
-    IN::data: np.array (# of some docs, # of all features)
-    IN::labels: list (# of some docs)
     """
-    pass
+    def get_error(node):
+        Z = C45_Z
+        N = sum(node.count)
+        f = 1 - max(node.count)/N
+        e = (f+(Z**2)/(2*N)+Z*np.sqrt(f/N-(f**2)/N+(Z**2)/(4*(N**2))))/(1+Z**2/N)
+        return e
+        
+    # if leaf, return
+    if node.is_leaf():
+        return node
+    
+    ## recursion
+    node.left = PruneDTree(node.left,i+1)
+    node.right = PruneDTree(node.right,i+1)
+    
+    # elif l is internal, check if l should be leaf; update if so
+    if node.left.is_internal():
+        original = get_error(node.left.left) + get_error(node.left.right)
+        replaced = get_error(node.left)
+        if replaced <= original:
+            node.left.replace_with_leaf()
+    if node.right.is_internal():
+        original = get_error(node.right.left) + get_error(node.right.right)
+        replaced = get_error(node.right)
+        if replaced <= original:
+            node.right.replace_with_leaf()
+    
+    print('-'*i)
+    return node
+    
 
 def Predict(node, doc):
     """
@@ -275,7 +317,7 @@ def Predict(node, doc):
     if not node:
         logging.error('Empty node accessed while predicting')
         return None
-    if node.label != None:
+    if node.is_leaf():
         return node.label
     if doc[node.feature] < node.value:
         return Predict(node.left, doc)
@@ -283,6 +325,13 @@ def Predict(node, doc):
 
 
 if __name__ == "__main__":
+    logging.info(f"""
+    MODEL_SIZE = {MODEL_SIZE}
+    FEATURE_SPLIT = {FEATURE_SPLIT}
+    C45_Z = {C45_Z}
+    MIN_N_FILES = {MIN_N_FILES}
+    """)
+
     #Never call shuffle_files() again!!
     
     fold = 3    # TODO: fold - from 0 to 9
@@ -291,12 +340,13 @@ if __name__ == "__main__":
     # compute attr
     ## train word2vec
     model_name = f'model/model-{fold}.w2v'
-    #model = train_w2v(train_texts, model_name)
-    model = pickle.load(open(model_name,'rb'))
+    model = train_w2v(train_texts, model_name)
+    #model = pickle.load(open(model_name,'rb'))
     
     ### tag words & docs
     train_x = docs2vecs(model, train_texts)
     test_x = docs2vecs(model, test_texts) 
+    logging.info('Docs tagged')
 
     # decision tree
     ## impurity function
@@ -304,6 +354,7 @@ if __name__ == "__main__":
     ### -[ ] Gini index
     ### -[ ] Misclassification error
 
+    logging.info('Growing tree')
     ## growing
     ### if termination condition not reached
     ### calculate each candidate's info gain
@@ -313,16 +364,61 @@ if __name__ == "__main__":
     # NOTE: To pickle a self-defined type (e.g. DTreeNode),
     # see https://stackoverflow.com/questions/27351980/how-to-add-a-custom-type-to-dills-pickleable-types
 
-    ## post-pruning
-    ### Subtree replacement
-    #pruned_tree = PruneDTree(raw_tree, train_x, train_y)
-
+    
+    
     # Testing
     ## accuracy
     ## f-measure
+
+    def get_result(tree, x, y):
+        """
+        OUT::result: np array (# of cats, # of cats)
+        """
+        result = np.zeros(shape=(9,9))
+        for i in range(len(y)):
+            cat_ans = y[i]
+            cat_pred = Predict(tree, x[i])
+            result[cat_ans,cat_pred] += 1
+        accuracy = result.trace()/result.sum()
+        return result, accuracy     # TODO: f1_score
+    
     ## plot the result (热度图)
-    i_r = sum([1 for i in range(len(train_x)) if Predict(raw_tree, train_x[i]) == train_y[i]])
-    o_r = sum([1 for i in range(len(test_x)) if Predict(raw_tree, test_x[i]) == test_y[i]])
-    print("Accuracy on training:",i_r/len(train_x))
-    print("Accuracy on testing:",o_r/len(test_x))
-        
+    def plot_result(title, result):
+        categories = ['证券', '教育', '健康', '娱乐', '房产', '科技', '财经', '军事', '体育']
+        plt.rc('font', family='Heiti SC')
+        plt.imshow(result)
+        plt.xticks(np.arange(9),categories)
+        plt.yticks(np.arange(9),categories)
+        for i in range(9):
+            for j in range(9):
+                text = plt.text(j, i, result[i,j],
+                    ha='center', va='center', color='w')
+        plt.title(title)
+        plt.colorbar()
+        plt.show()
+
+
+
+    # raw tree
+    logging.info("Raw tree")
+    rtrain_result, rtrain_accuracy = get_result(raw_tree, train_x, train_y)
+    rtest_result, rtest_accuracy = get_result(raw_tree, test_x, test_y)
+    logging.info(f"Accuracy on training: {rtrain_accuracy:.3f}")
+    logging.info(f"Accuracy on testing: {rtest_accuracy:.3f}")
+    print(rtest_result)
+    plot_result("Raw tree accuracy",rtest_result)
+
+    ## post-pruning
+    ### Subtree replacement
+    logging.info('Pruning tree')
+    pruned_tree = PruneDTree(raw_tree,1)
+
+    # pruned tree
+    logging.info("Pruned tree")
+    ptrain_result, ptrain_accuracy = get_result(pruned_tree, train_x, train_y)
+    ptest_result, ptest_accuracy = get_result(pruned_tree, test_x, test_y)
+    logging.info(f"Accuracy on training: {ptrain_accuracy:.3f}")
+    logging.info(f"Accuracy on testing: {ptest_accuracy:.3f}")
+    print(ptest_result)
+    plot_result("Pruned tree accuracy",ptest_result)
+    
