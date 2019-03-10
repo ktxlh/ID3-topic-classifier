@@ -5,20 +5,21 @@ import pickle
 from random import shuffle
 import gensim
 import time
+import random
 import numpy as np
-logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.INFO)
+logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.DEBUG)
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__)) # This is the Project Root
 CATEGORIES = {'证券': 0, '教育': 1, '健康': 2, '娱乐': 3, '房产': 4, '科技': 5, '财经': 6, '军事': 7, '体育': 8}
 MODEL_SIZE = 100    # TODO: tuning
 FEATURE_SPLIT = 2   # TODO: tuning
-
+TIME_STAMP  = time.strftime("%Y%m%d%H%M%S", time.localtime())  # to avoid duplicated file names deleting files
+    
 def shuffle_files():
     """
     This is one-off, facilitating cross validation.
     Usage: shuffle_files()
     """
     num_files = 0
-    time_string  = time.strftime("%Y%m%d%H%M%S", time.localtime())  # to avoid duplicated file names deleting files
     for root, dirs, files in os.walk("new_weibo_13638/"):
         path = root.split(os.sep)
         if len(files)!=0:    
@@ -28,7 +29,7 @@ def shuffle_files():
             for nf, f in enumerate(files_copy):
                 num_files += 1
                 old_name = os.path.join(ROOT_DIR, root, f)
-                new_name = os.path.join(ROOT_DIR, root, f"{category}-{nf}-{time_string}.txt")
+                new_name = os.path.join(ROOT_DIR, root, f"{category}-{nf}-{TIME_STAMP}.txt")
                 os.rename(old_name, new_name)
     logging.info(f"{num_files} files shuffled.")
 
@@ -55,6 +56,10 @@ def load_files(fold):
         train_cat = []
         test_cat = []
         for nf, f in enumerate(sorted(files)):
+
+            if nf > int(time.time()*10000)%7+11: # TODO: Take this off
+                break 
+            
             data = read_data_from_file(root, f)
             if data:
                 if nf % 10 != fold:
@@ -110,9 +115,11 @@ def docs2vecs(model, docs):
 class DTreeNode:
     def __init__(self):
         #self.parent = parent_node
-        self.left = None
-        self.right = None
-        self.label = -1
+        self.label = None   # Leaf node;     int
+        self.left = None    # Internal node; DTreeNode
+        self.right = None   # Internal node; DTreeNode
+        self.feature = None # Internal node; int
+        self.value = None   # Internal node; float
         """
         if parent_node:
             if parent_left:
@@ -120,16 +127,21 @@ class DTreeNode:
             else:
                 parent_node.right = self
         """
-    def split(feature, value):
+    def set_leaf(self,label):
+        self.label = label
+        logging.debug(f'Leaf: {label}')
+    def set_internal(self,feature, value):
         self.feature = feature
         self.value = value
+        logging.debug(f'Internal: {feature}; {value}')
+        
 
 def DTree(data, labels, features): # examples, features
     """
-    data: np.array (# of some docs, # of all features)
-    labels: list (# of some docs)
-    features: a list of remaining features' indices
-    rtn: a DTreeNode
+    IN::data: np.array (# of some docs, # of all features)
+    IN::labels: list (# of some docs)
+    IN::features: a list of remaining features' indices
+    OUT::rtn: a DTreeNode
     """
     def get_candidate_splits():
         """
@@ -161,7 +173,7 @@ def DTree(data, labels, features): # examples, features
         OUT::rtn: ∑_i ∑_j |S_i^j| log(|S_i^j|/|S_i|)
                   where i iterates < or >=; j iterates categories
         """
-        s_v_c = np.zeros((2,2), dtype=np.int8)
+        s_v_c = np.zeros((2,9), dtype=np.int8)
         for doc, label in zip(data,labels):
             child_node = int(doc[feature] >= value)
             s_v_c[child_node,label] += 1
@@ -180,10 +192,11 @@ def DTree(data, labels, features): # examples, features
             score_function(feature, value) 
             for value in candidates[feature]] # dim 1
             for feature in features])         # dim 0
-        a = np.max(scores, 1)    # a = features_best_values
-        b = np.argmax(a, 0)      # b = argmax_feature_index_in_scores
-        return features[b], a[b] # argmax_feature, max_value
-        
+        a = np.max(scores, axis=1)       # a = features best values
+        b = np.argmax(a, axis=0)         # b = argmax feature index in scoress
+        c = np.argmax(scores[b], axis=0) # c = argmax value index of the feature
+        return features[b], candidates[features[b],c]   # argmax feature index, argmax value
+            
     # Will return a DTreeNode anyway. Create one first.
     rtn = DTreeNode()
     
@@ -192,26 +205,26 @@ def DTree(data, labels, features): # examples, features
     counted_label = [labels.count(i) for i in range(9)]
     for label in range(9):
         if counted_label[label] == len(labels):
-            rtn.label = label
+            rtn.set_leaf(label)
             return rtn
     
     #Else if the set of features is empty, 
     #return a leaf node with the category label 
     #that is the most common in examples. 
     most_common_label = counted_label.index(max(counted_label))
+    #print('most common ',most_common_label)
     if len(features) == 0:
-        rtn.label = most_common_label
+        rtn.set_leaf(most_common_label)
         return rtn
     
     #Else pick a feature F and create a node R for it
-    # TODO: The same feature can be used more than once given that the splits differ
+    # TODO: The same feature can be used more than once given that the splits differ?
     feature, value = get_best_rule(neg_sum_entropy)
-
+    
     #For each possible value vi of F: (NOTE: we have only 2: < & >=)
     #Let examples_i be the subset of examples that have value v_i for F
     #Add an out-going edge E to node R labeled with the value v_i.
-    rtn.feature = feature
-    rtn.value = value    
+    rtn.set_internal(feature, value)
     
     #If examples_i is empty
     #then attach a leaf node to edge E labeled with the category that
@@ -228,29 +241,50 @@ def DTree(data, labels, features): # examples, features
         lr_data[lr] = np.concatenate((lr_data[lr],[doc]))
         lr_labels[lr].append(labels[n_doc])    
 
-    features.remove(feature)    
+    features.remove(feature)
+    #print(len(lr_labels))
 
     if len(lr_labels[0]) == 0:
         rtn.left = DTreeNode()
-        rtn.left.label = most_common_label
+        rtn.left.set_leaf(most_common_label)
     else:
         rtn.left = DTree(lr_data[0], lr_labels[0], features)
         
     if len(lr_labels[1]) == 0:
         rtn.right = DTreeNode()
-        rtn.right.label = most_common_label
+        rtn.right.set_leaf(most_common_label)
     else:
         rtn.right = DTree(lr_data[1], lr_labels[1], features)
 
     #Return the subtree rooted at R.
     return rtn
     
+def PruneDTree(node, data, labels):
+    """
+    IN::node: root node of DTree
+    IN::data: np.array (# of some docs, # of all features)
+    IN::labels: list (# of some docs)
+    """
+    pass
 
+def Predict(node, doc):
+    """
+    IN::node: root node of DTree
+    IN::doc: np.array (# of all features)
+    """
+    if not node:
+        logging.error('Empty node accessed while predicting')
+        return None
+    if node.label != None:
+        return node.label
+    if doc[node.feature] < node.value:
+        return Predict(node.left, doc)
+    return Predict(node.right, doc)
 
 
 if __name__ == "__main__":
     #Never call shuffle_files() again!!
-
+    
     fold = 3    # TODO: fold - from 0 to 9
     train_texts, train_y, test_texts, test_y = load_files(fold)
     
@@ -262,9 +296,8 @@ if __name__ == "__main__":
     
     ### tag words & docs
     train_x = docs2vecs(model, train_texts)
-    test_x = docs2vecs(model, test_texts)
-    
-    
+    test_x = docs2vecs(model, test_texts) 
+
     # decision tree
     ## impurity function
     ### -[*] Entropy
@@ -276,13 +309,20 @@ if __name__ == "__main__":
     ### calculate each candidate's info gain
     ### choose the best one and split
     ### recursion
-    tree = DTree(train_x, train_y, )
-    
-    ## pruning
-    
-    # prediction
+    raw_tree = DTree(train_x, train_y, [i for i in range(train_x.shape[1])])
+    # NOTE: To pickle a self-defined type (e.g. DTreeNode),
+    # see https://stackoverflow.com/questions/27351980/how-to-add-a-custom-type-to-dills-pickleable-types
+
+    ## post-pruning
+    ### Subtree replacement
+    #pruned_tree = PruneDTree(raw_tree, train_x, train_y)
+
+    # Testing
     ## accuracy
     ## f-measure
-    
-    
+    ## plot the result (热度图)
+    i_r = sum([1 for i in range(len(train_x)) if Predict(raw_tree, train_x[i]) == train_y[i]])
+    o_r = sum([1 for i in range(len(test_x)) if Predict(raw_tree, test_x[i]) == test_y[i]])
+    print("Accuracy on training:",i_r/len(train_x))
+    print("Accuracy on testing:",o_r/len(test_x))
         
