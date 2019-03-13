@@ -17,9 +17,19 @@ WORD2VEC_MODEL_SIZE = 100
 WORD2VEC_WINDOW = 10
 WORD2VEC_MIN_COUNT = 3
 FEATURE_SPLIT = 30
-C45_Z = 1.64
+C45_Z = 1.96
 MIN_N_FILES = 99999
-SCORE = 'GINI'  #'ENTROPY'
+SCORE = 'ENTROPY'
+
+
+"""
+To be initialized in each experiment
+"""
+raw_result = np.array([[0 for i in range(9)] for i in range(9)])
+pruned_result = np.array([[0 for i in range(9)] for i in range(9)])
+raw_accuracy = []
+pruned_accuracy = []
+
 
 def lognprint(text):
     logging.info(text)
@@ -391,113 +401,117 @@ def plot_result(title, result):
     plt.savefig(f'plot/{title}-{TIME_STAMP}.png')
     plt.clf()
     lognprint(f'{title}-Result plotted:\n{result}')
-    lognprint(f'{title}-Result accuracy:\n{result.trace()/result.sum():.3f}')
+    lognprint(f'{title}-Result accuracy:{result.trace()/result.sum():.3f}')
+
+def one_fold(fold, train_new_model):
+    #Never call shuffle_files() again!!
+    
+    train_texts, train_y, test_texts, test_y = load_files(fold)
+    
+    # compute attr
+    ## train word2vec
+    model_name = f'model/model-{fold}.w2v'
+    if train_new_model:
+        model = train_w2v(train_texts, model_name)
+    else:
+        model = pickle.load(open(model_name,'rb'))
+    
+    ### tag words & docs
+    train_x = docs2vecs(model, train_texts)
+    test_x = docs2vecs(model, test_texts) 
+    lognprint('Docs tagged')
+
+    # decision tree
+    ## impurity function
+    ### -[*] Entropy
+    ### -[ ] Gini index
+    ### -[ ] Misclassification error
+
+    lognprint('Growing tree')
+    ## growing
+    ### if termination condition not reached
+    ### calculate each candidate's info gain
+    ### choose the best one and split
+    ### recursion
+    tree = DTree(train_x, train_y, [i for i in range(train_x.shape[1])], 1)
+    # NOTE: To pickle a self-defined type (e.g. DTreeNode),
+    # see https://stackoverflow.com/questions/27351980/how-to-add-a-custom-type-to-dills-pickleable-types
+
+    
+    
+    # Testing
+    ## accuracy
+    ## f-measure
+
+    def get_result(tree, x, y):
+        """
+        OUT::result: np array (# of cats, # of cats)
+        """
+        result = np.array([[0 for i in range(9)] for i in range(9)])
+        for i in range(len(y)):
+            cat_ans = y[i]
+            cat_pred = Predict(tree, x[i])
+            result[cat_ans,cat_pred] += 1
+        accuracy = result.trace()/result.sum()
+        return result, accuracy     # TODO: f1_score?
+    
+    def evaluate(tree, result, accuracy):
+        train_result, train_accuracy = get_result(tree, train_x, train_y)
+        test_result, test_accuracy = get_result(tree, test_x, test_y)
+        
+        result += test_result
+        accuracy.append(test_accuracy)
+        
+        logging.info(train_result)
+        lognprint(f"Accuracy on training: {train_accuracy:.3f}")
+        logging.info(test_result)
+        lognprint(f"Accuracy on testing: {test_accuracy:.3f}")
+
+    # raw tree
+    lognprint("Raw tree:")
+    evaluate(tree, raw_result, raw_accuracy)
+
+    ## post-pruning
+    ### Subtree replacement
+    lognprint('Pruning tree')
+    PruneDTree(tree,1)
+
+    # pruned tree
+    lognprint("Pruned tree:")
+    evaluate(tree, pruned_result, pruned_accuracy)
+
+def experiment():
+    raw_result = np.array([[0 for i in range(9)] for i in range(9)])
+    pruned_result = np.array([[0 for i in range(9)] for i in range(9)])
+    raw_accuracy = []
+    pruned_accuracy = []
+    
+    lognprint_parameters()
+    for fold in range(10):
+        lognprint("-"*100+f" Fold {fold} "+"-"*100)
+        one_fold(fold=fold, train_new_model=False)
+    plot_result(f'{SCORE} z={C45_Z} Raw Tree', raw_result)
+    plot_result(f'{SCORE} z={C45_Z} Pruned Tree', pruned_result)
+
 
 
 if __name__ == "__main__":
-    
-    raw_result = np.array([[0 for i in range(9)] for i in range(9)])
-    pruned_result = np.array([[0 for i in range(9)] for i in range(9)])
-    raw_accuracy = []
-    pruned_accuracy = []
-    
-    
-    def one_fold(fold, train_new_model):
-        #Never call shuffle_files() again!!
-        
-        train_texts, train_y, test_texts, test_y = load_files(fold)
-        
-        # compute attr
-        ## train word2vec
-        model_name = f'model/model-{fold}.w2v'
-        if train_new_model:
-            model = train_w2v(train_texts, model_name)
-        else:
-            model = pickle.load(open(model_name,'rb'))
-        
-        ### tag words & docs
-        train_x = docs2vecs(model, train_texts)
-        test_x = docs2vecs(model, test_texts) 
-        lognprint('Docs tagged')
+   
+    #ZS = [0.67, 1.00, 1.64, 1.96]
+    ########################################################################
+    SCORE = 'GINI'
+    C45_Z = 1.00
+    experiment()
 
-        # decision tree
-        ## impurity function
-        ### -[*] Entropy
-        ### -[ ] Gini index
-        ### -[ ] Misclassification error
+    ########################################################################
+    SCORE = 'GINI'
+    C45_Z = 1.96
+    experiment()
 
-        lognprint('Growing tree')
-        ## growing
-        ### if termination condition not reached
-        ### calculate each candidate's info gain
-        ### choose the best one and split
-        ### recursion
-        tree = DTree(train_x, train_y, [i for i in range(train_x.shape[1])], 1)
-        # NOTE: To pickle a self-defined type (e.g. DTreeNode),
-        # see https://stackoverflow.com/questions/27351980/how-to-add-a-custom-type-to-dills-pickleable-types
-
-        
-        
-        # Testing
-        ## accuracy
-        ## f-measure
-
-        def get_result(tree, x, y):
-            """
-            OUT::result: np array (# of cats, # of cats)
-            """
-            result = np.array([[0 for i in range(9)] for i in range(9)])
-            for i in range(len(y)):
-                cat_ans = y[i]
-                cat_pred = Predict(tree, x[i])
-                result[cat_ans,cat_pred] += 1
-            accuracy = result.trace()/result.sum()
-            return result, accuracy     # TODO: f1_score?
-        
-        def evaluate(tree, result, accuracy):
-            train_result, train_accuracy = get_result(tree, train_x, train_y)
-            test_result, test_accuracy = get_result(tree, test_x, test_y)
-            
-            result += test_result
-            accuracy.append(test_accuracy)
-            
-            lognprint(train_result)
-            lognprint(f"Accuracy on training: {train_accuracy:.3f}")
-            lognprint(test_result)
-            lognprint(f"Accuracy on testing: {test_accuracy:.3f}")
-
-        # raw tree
-        lognprint("Raw tree:")
-        evaluate(tree, raw_result, raw_accuracy)
-
-        ## post-pruning
-        ### Subtree replacement
-        lognprint('Pruning tree')
-        PruneDTree(tree,1)
-
-        # pruned tree
-        lognprint("Pruned tree:")
-        evaluate(tree, pruned_result, pruned_accuracy)
-
-    # Gini    
-    lognprint_parameters()
-    for fold in range(10):
-        lognprint("-"*300+f" Fold {fold} "+"-"*300)
-        one_fold(fold, True)
-    plot_result('Gini Raw Tree', raw_result)
-    plot_result('Gini Pruned Tree', pruned_result)
-
-
-    # Entropy
-    raw_result = np.array([[0 for i in range(9)] for i in range(9)])
-    pruned_result = np.array([[0 for i in range(9)] for i in range(9)])
-    raw_accuracy = []
-    pruned_accuracy = []
-    
+    ########################################################################
     SCORE = 'ENTROPY'
-    lognprint_parameters()
-    for fold in range(10):
-        lognprint("-"*300+f" Fold {fold} "+"-"*300)
-        one_fold(fold, False)
-    plot_result('Entropy Raw Tree', raw_result)
-    plot_result('Entropy Pruned Tree', pruned_result)
+    C45_Z = 1.96
+    experiment()
+
+
+    
