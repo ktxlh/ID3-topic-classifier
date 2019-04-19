@@ -513,5 +513,14 @@ if __name__ == "__main__":
     C45_Z = 1.96
     experiment()
 
+    """
+    TODO: Pruning can be done (i.e. z can be test) 
+    within one tree construction:
+        Grow a tree (The most time-consuming part!)
+        Make several copies
+        Prune each tree
+        Get the result
+    This will be much more efficient
+    """
 
     
